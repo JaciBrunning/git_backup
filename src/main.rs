@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::{path::{Path, PathBuf}, process::exit};
 
+use clap::Parser;
 use git2::Repository;
 use log::{info, error};
 
@@ -45,21 +46,36 @@ async fn process_repos(repos: Vec<git::GitRepo>, root: &Path) {
   }
 }
 
+#[derive(Parser, Debug)]
+#[clap(about, version, author)]
+struct Args {
+  #[clap(short, long, default_value = "config.yml")]
+  config: PathBuf
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   pretty_env_logger::init();
+  let args = Args::parse();
 
-  let f = std::fs::File::open("config.yml")?;
-  let cfg: GitBackupSettings = serde_yaml::from_reader(f)?;
-
-  let root = Path::new(&cfg.target);
-
-  for source in &cfg.sources {
-    info!("Processing Source: {:?}", source);
-    match source {
-      Source::Github(gh) => process_repos(gh.repos().await, root).await,
-      Source::Gitlab(gl) => process_repos(gl.repos().await, root).await
-    }
+  match std::fs::File::open(&args.config) {
+    Ok(f) => {
+      let cfg: GitBackupSettings = serde_yaml::from_reader(f)?;
+    
+      let root = Path::new(&cfg.target);
+    
+      for source in &cfg.sources {
+        info!("Processing Source: {:?}", source);
+        match source {
+          Source::Github(gh) => process_repos(gh.repos().await, root).await,
+          Source::Gitlab(gl) => process_repos(gl.repos().await, root).await
+        }
+      }
+    },
+    Err(err) => {
+      error!("Could not open config file {}: {}", args.config.display(), err);
+      exit(1)
+    },
   }
 
   Ok(())
