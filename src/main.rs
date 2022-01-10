@@ -1,8 +1,10 @@
 use std::{path::{Path, PathBuf}, process::exit};
 
 use clap::Parser;
+use futures::future::join_all;
 use git2::Repository;
 use log::{info, error};
+use tokio::task;
 
 use crate::{config::{GitBackupSettings, Source}, git::RepoProvider};
 
@@ -11,8 +13,8 @@ pub mod config;
 pub mod github;
 pub mod gitlab;
 
-async fn process_repo(repo: &git::GitRepo, root: &Path) {
-  let target_dir = root.join(&repo.source).join(&repo.owner).join(&repo.name);
+async fn process_repo(repo: &git::GitRepo, target: String) {
+  let target_dir = Path::new(&target).join(&repo.source).join(&repo.owner).join(&repo.name);
   let target_dir = target_dir.as_path();
 
   match Repository::open(target_dir) {
@@ -40,10 +42,13 @@ async fn process_repo(repo: &git::GitRepo, root: &Path) {
   }
 }
 
-async fn process_repos(repos: Vec<git::GitRepo>, root: &Path) {
-  for repo in repos {
-    process_repo(&repo, root).await;
-  }
+async fn process_repos(repos: Vec<git::GitRepo>, root: String) {
+  let join_handles = repos.into_iter().map(|repo| {
+    let target = root.clone();
+    task::spawn(async move { process_repo(&repo, target).await })
+  });
+
+  join_all(join_handles).await;
 }
 
 #[derive(Parser, Debug)]
@@ -61,16 +66,19 @@ async fn main() -> anyhow::Result<()> {
   match std::fs::File::open(&args.config) {
     Ok(f) => {
       let cfg: GitBackupSettings = serde_yaml::from_reader(f)?;
-    
-      let root = Path::new(&cfg.target);
-    
-      for source in &cfg.sources {
-        info!("Processing Source: {:?}", source);
-        match source {
-          Source::Github(gh) => process_repos(gh.repos().await, root).await,
-          Source::Gitlab(gl) => process_repos(gl.repos().await, root).await
-        }
-      }
+
+      let join_handles = cfg.sources.into_iter().map(|source| {
+        let target = cfg.target.clone();
+        task::spawn(async move {
+          info!("Processing Source: {:?}", source);
+          match source {
+            Source::Github(gh) => process_repos( gh.repos().await, target).await,
+            Source::Gitlab(gl) => process_repos(gl.repos().await, target).await,
+          };
+        })
+      });
+
+      join_all(join_handles).await;
     },
     Err(err) => {
       error!("Could not open config file {}: {}", args.config.display(), err);
