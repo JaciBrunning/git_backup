@@ -60,6 +60,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+  if let Err(_) = std::env::var("RUST_LOG") {
+    std::env::set_var("RUST_LOG", "info");
+  }
+
   pretty_env_logger::init();
   let args = Args::parse();
 
